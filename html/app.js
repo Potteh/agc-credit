@@ -8,3 +8,27 @@ function player(d){subtitle.textContent='Credit & Card Center';let cards=Object.
 function admin(d){subtitle.textContent=`Admin Credit Report · ${d.player} · ${d.citizenid}`;let missed=d.accounts.reduce((s,a)=>s+Number(a.missed_payments||0),0);content.innerHTML=`<div class="score">${d.score}</div><div class="${missed?'bad':'good'}">Total recorded missed payments: <b>${missed}</b></div><h2>Accounts / delinquency</h2>${d.accounts.length?d.accounts.map(accountHTML).join(''):'<div class="card muted">No accounts.</div>'}`}
 window.applyCard=k=>post('apply',{cardType:k});window.pay=id=>{let v=document.getElementById('pay-'+id).value;post('pay',{accountId:id,amount:v})};
 window.addEventListener('message',e=>{if(e.data.action==='open'){app.classList.remove('hidden');player(e.data.data)}if(e.data.action==='admin'){app.classList.remove('hidden');admin(e.data.data)}});
+
+
+// AGC reusable payment selector (Cash / Debit / Credit)
+window.addEventListener('message', (event) => {
+  const m = event.data || {};
+  if (m.action !== 'payment') return;
+  const opts = m.options || {};
+  const money = n => '$' + Number(n || 0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const cards = (opts.cards || []).filter(c => Number(c.available || 0) >= Number(m.amount || 0));
+  document.body.innerHTML = `<div class="wrap"><div class="panel payment-panel">
+    <div class="top"><div><h1>Choose Payment Method</h1><div class="muted">${esc(m.description || 'Purchase')}</div></div><button id="payCancel">×</button></div>
+    <div class="purchase-total">${money(m.amount)}</div>
+    <div class="payment-grid">
+      ${opts.allowCash ? `<button class="pay-option" data-method="cash"><b>Cash</b><span>Wallet balance: ${money(opts.cash)}</span><em>${Number(opts.cash||0)>=Number(m.amount||0)?'Available':'Insufficient funds'}</em></button>`:''}
+      ${opts.allowDebit ? `<button class="pay-option" data-method="debit"><b>Debit</b><span>Bank balance: ${money(opts.debit)}</span><em>${Number(opts.debit||0)>=Number(m.amount||0)?'Available':'Insufficient funds'}</em></button>`:''}
+      ${opts.allowCredit ? (opts.cards||[]).map(c=>`<button class="pay-option" data-method="credit" data-account="${c.id}" ${Number(c.available||0)<Number(m.amount||0)?'disabled':''}><b>${esc(c.label)} •••• ${esc(c.last4)}</b><span>Available credit: ${money(c.available)}</span><em>${Number(c.available||0)>=Number(m.amount||0)?'Charge this card':'Insufficient credit'}</em></button>`).join('') : ''}
+    </div>
+  </div></div>`;
+  document.querySelectorAll('.pay-option').forEach(btn => btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    post('choosePayment',{requestId:m.requestId,method:btn.dataset.method,accountId:btn.dataset.account||null});
+  }));
+  document.getElementById('payCancel').addEventListener('click',()=>post('cancelPayment',{requestId:m.requestId}));
+});

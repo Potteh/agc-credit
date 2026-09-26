@@ -61,13 +61,142 @@ RegisterNetEvent('agc-credit:pay',function(accountId,amount)
     TriggerClientEvent('QBCore:Notify',src,('$%d payment posted.'):format(amount),'success'); TriggerClientEvent('agc-credit:refresh',src)
 end)
 
+
+
+local function getUsableCards(cid)
+    local rows = MySQL.query.await("SELECT id, card_type, card_number, balance, credit_limit, status FROM agc_credit_accounts WHERE citizenid=? AND status='active' ORDER BY id DESC", {cid}) or {}
+    local cards = {}
+    for _, a in ipairs(rows) do
+        local balance = tonumber(a.balance) or 0
+        local limit = tonumber(a.credit_limit) or 0
+        local def = Config.Cards[a.card_type] or {}
+        cards[#cards+1] = {
+            id = a.id,
+            cardType = a.card_type,
+            label = def.label or a.card_type,
+            last4 = tostring(a.card_number or ''):sub(-4),
+            balance = balance,
+            creditLimit = limit,
+            available = math.max(0, limit - balance),
+            status = a.status
+        }
+    end
+    return cards
+end
+
+local function chargeCredit(cid, accountId, amount, description)
+    amount = math.floor((tonumber(amount) or 0) * 100 + 0.5) / 100
+    if amount <= 0 then return false, 'Invalid amount.' end
+    local a = MySQL.single.await('SELECT * FROM agc_credit_accounts WHERE id=? AND citizenid=?', {accountId, cid})
+    if not a then return false, 'Credit card not found.' end
+    if a.status ~= 'active' then return false, 'This credit card is not active.' end
+    local available = (tonumber(a.credit_limit) or 0) - (tonumber(a.balance) or 0)
+    if amount > available then return false, 'Insufficient available credit.' end
+    MySQL.update.await('UPDATE agc_credit_accounts SET balance=balance+? WHERE id=?', {amount, accountId})
+    history(cid, accountId, 'purchase', amount, 0, description or 'Credit card purchase')
+    return true
+end
+
+local function processPayment(src, method, amount, accountId, description)
+    local P = QBCore.Functions.GetPlayer(tonumber(src))
+    amount = math.floor((tonumber(amount) or 0) * 100 + 0.5) / 100
+    if not P or amount <= 0 then return false, 'Invalid payment.' end
+    method = tostring(method or ''):lower()
+    if method == 'cash' then
+        if not Config.PaymentSelector.AllowCash then return false, 'Cash payments are disabled.' end
+        if not P.Functions.RemoveMoney('cash', amount, description or 'agc-payment-cash') then return false, 'Not enough cash.' end
+        return true
+    elseif method == 'debit' then
+        if not Config.PaymentSelector.AllowDebit then return false, 'Debit payments are disabled.' end
+        local bank = Config.PaymentSelector.DebitAccount or 'bank'
+        if not P.Functions.RemoveMoney(bank, amount, description or 'agc-payment-debit') then return false, 'Insufficient bank funds.' end
+        return true
+    elseif method == 'credit' then
+        if not Config.PaymentSelector.AllowCredit then return false, 'Credit payments are disabled.' end
+        return chargeCredit(P.PlayerData.citizenid, tonumber(accountId), amount, description)
+    end
+    return false, 'Unknown payment method.'
+end
+
+QBCore.Functions.CreateCallback('agc-credit:getPaymentOptions', function(src, cb, amount)
+    local P = QBCore.Functions.GetPlayer(src)
+    if not P then return cb(nil) end
+    local money = P.PlayerData.money or {}
+    cb({
+        amount = tonumber(amount) or 0,
+        cash = tonumber(money.cash) or 0,
+        debit = tonumber(money[Config.PaymentSelector.DebitAccount or 'bank']) or 0,
+        cards = getUsableCards(P.PlayerData.citizenid),
+        allowCash = Config.PaymentSelector.AllowCash,
+        allowDebit = Config.PaymentSelector.AllowDebit,
+        allowCredit = Config.PaymentSelector.AllowCredit
+    })
+end)
+
+RegisterNetEvent('agc-credit:paymentChoice', function(requestId, method, accountId)
+    local src = source
+    local pending = PendingPayments and PendingPayments[requestId]
+    if not pending or pending.source ~= src then return end
+    PendingPayments[requestId] = nil
+    local ok, reason = processPayment(src, method, pending.amount, accountId, pending.description)
+    TriggerClientEvent('agc-credit:paymentResult', src, requestId, ok, reason, method)
+    if pending.callback then pending.callback(ok, reason, method, accountId) end
+end)
+
+PendingPayments = PendingPayments or {}
+local paymentSeq = 0
+
+-- Opens the Cash / Debit / Credit selector for a player.
+-- The callback runs server-side after funds/credit have actually been charged.
+exports('RequestPayment', function(src, amount, description, callback)
+    src = tonumber(src); amount = tonumber(amount)
+    if not src or not amount or amount <= 0 then
+        if callback then callback(false, 'Invalid payment request.') end
+        return nil
+    end
+    paymentSeq = paymentSeq + 1
+    local requestId = ('%d:%d:%d'):format(src, os.time(), paymentSeq)
+    PendingPayments[requestId] = {source=src, amount=amount, description=description or 'Purchase', callback=callback}
+    TriggerClientEvent('agc-credit:openPaymentSelector', src, requestId, amount, description or 'Purchase')
+    SetTimeout(60000, function()
+        local pending = PendingPayments[requestId]
+        if pending then
+            PendingPayments[requestId] = nil
+            if pending.callback then pending.callback(false, 'Payment selection timed out.') end
+        end
+    end)
+    return requestId
+end)
+
+exports('ProcessPayment', function(src, method, amount, accountId, description)
+    return processPayment(src, method, amount, accountId, description)
+end)
+
+exports('GetPlayerCards', function(srcOrCitizenId)
+    local cid = srcOrCitizenId
+    if type(srcOrCitizenId) == 'number' then
+        local P = QBCore.Functions.GetPlayer(srcOrCitizenId)
+        if not P then return {} end
+        cid = P.PlayerData.citizenid
+    end
+    return getUsableCards(cid)
+end)
+
+exports('GetAvailableCredit', function(srcOrCitizenId, accountId)
+    local cid = srcOrCitizenId
+    if type(srcOrCitizenId) == 'number' then
+        local P = QBCore.Functions.GetPlayer(srcOrCitizenId)
+        if not P then return 0 end
+        cid = P.PlayerData.citizenid
+    end
+    local a = MySQL.single.await("SELECT balance, credit_limit, status FROM agc_credit_accounts WHERE id=? AND citizenid=?", {accountId, cid})
+    if not a or a.status ~= 'active' then return 0 end
+    return math.max(0, (tonumber(a.credit_limit) or 0) - (tonumber(a.balance) or 0))
+end)
+
 -- Other server scripts can charge a card using this export.
 exports('ChargeCard',function(citizenid,accountId,amount,description)
-    amount=tonumber(amount) or 0
-    local a=MySQL.single.await('SELECT * FROM agc_credit_accounts WHERE id=? AND citizenid=?',{accountId,citizenid})
-    if not a or a.status~='active' or amount<=0 or tonumber(a.balance)+amount>tonumber(a.credit_limit) then return false end
-    MySQL.update.await('UPDATE agc_credit_accounts SET balance=balance+? WHERE id=?',{amount,accountId})
-    history(citizenid,accountId,'purchase',amount,0,description or 'Credit card purchase'); return true
+    return chargeCredit(citizenid, accountId, amount, description)
 end)
 exports('GetCreditScore',function(srcOrCitizenId)
     local cid=srcOrCitizenId

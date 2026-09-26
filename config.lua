@@ -22,3 +22,12 @@ Config.Cards = {
   platinum = { label='AGC Platinum', minScore=700, limit=10000, apr=17.99 },
   black = { label='AGC Black', minScore=760, limit=25000, apr=13.99 }
 }
+
+
+-- Payment selector settings
+Config.PaymentSelector = {
+  AllowCash = true,
+  AllowDebit = true,
+  AllowCredit = true,
+  DebitAccount = 'bank'
+}
