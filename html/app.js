@@ -1,3 +1,12 @@
+function esc(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 const app=document.getElementById('app'),content=document.getElementById('content'),subtitle=document.getElementById('subtitle');
 const post=(name,data={})=>fetch(`https://${GetParentResourceName()}/${name}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 document.getElementById('close').onclick=()=>{app.classList.add('hidden');post('close')};
