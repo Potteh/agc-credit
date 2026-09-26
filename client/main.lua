@@ -22,7 +22,10 @@ RegisterNetEvent('agc-credit:openPaymentSelector', function(requestId, amount, d
   end, amount)
 end)
 RegisterNetEvent('agc-credit:paymentResult', function(requestId, success, reason)
-  if not success and reason then QBCore.Functions.Notify(reason,'error') end
+  open=false
+  SetNuiFocus(false,false)
+  SendNUIMessage({action='paymentClosed',requestId=requestId})
+  if not success and reason and reason ~= 'Payment cancelled.' then QBCore.Functions.Notify(reason,'error') end
 end)
 RegisterNUICallback('choosePayment',function(data,cb)
   open=false; SetNuiFocus(false,false)
